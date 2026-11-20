@@ -1,4 +1,3 @@
-
 <?php
 /**
  * Ottoman Palace Restaurant - One-time owner setup
@@ -42,11 +41,25 @@ if (!is_string($setupToken) || strlen($setupToken) < 32) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $submittedToken = (string) ($_POST['setup_token'] ?? '');
-    $csrfToken = (string) ($_POST['csrf_token'] ?? '');
-    $username = trim((string) ($_POST['username'] ?? ''));
-    $password = (string) ($_POST['password'] ?? '');
-    $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
+    $submittedToken = isset($_POST['setup_token']) && is_string($_POST['setup_token'])
+        ? $_POST['setup_token']
+        : '';
+
+    $csrfToken = isset($_POST['csrf_token']) && is_string($_POST['csrf_token'])
+        ? $_POST['csrf_token']
+        : '';
+
+    $username = isset($_POST['username']) && is_string($_POST['username'])
+        ? trim($_POST['username'])
+        : '';
+
+    $password = isset($_POST['password']) && is_string($_POST['password'])
+        ? $_POST['password']
+        : '';
+
+    $confirmPassword = isset($_POST['confirm_password']) && is_string($_POST['confirm_password'])
+        ? $_POST['confirm_password']
+        : '';
 
     if (!hash_equals($setupToken, $submittedToken)) {
         $message = 'مفتاح الإعداد غير صحيح.';
@@ -54,16 +67,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = 'انتهت صلاحية الصفحة. أعد تحميلها.';
     } elseif (!preg_match('/^[a-zA-Z0-9_.-]{3,80}$/', $username)) {
         $message = 'اسم المستخدم يجب أن يكون من 3 إلى 80 حرفًا أو رقمًا.';
-    } elseif (strlen($password) < 12) {
-        $message = 'كلمة المرور يجب ألا تقل عن 12 حرفًا.';
+    } elseif (strlen($password) < 12 || strlen($password) > 72) {
+        $message = 'كلمة المرور يجب أن تكون بين 12 و72 بايت.';
     } elseif ($password !== $confirmPassword) {
         $message = 'كلمتا المرور غير متطابقتين.';
     } else {
         try {
             $pdo->beginTransaction();
 
+            // Lock the admin table against concurrent owner creation.
+            $pdo->query(
+                'SELECT id FROM admin_users FOR UPDATE'
+            )->fetchAll();
+
             $adminCount = (int) $pdo->query(
-                'SELECT COUNT(*) FROM admin_users FOR UPDATE'
+                'SELECT COUNT(*) FROM admin_users'
             )->fetchColumn();
 
             if ($adminCount > 0) {
@@ -74,6 +92,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $password,
                     PASSWORD_DEFAULT
                 );
+
+                if ($passwordHash === false) {
+                    throw new RuntimeException('Password hashing failed.');
+                }
 
                 $statement = $pdo->prepare(
                     'INSERT INTO admin_users
@@ -89,9 +111,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->commit();
                 $success = true;
-                $_SESSION['admin_csrf_token'] = bin2hex(random_bytes(32));
             }
-        } catch (PDOException $exception) {
+        } catch (Throwable $exception) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
@@ -185,16 +206,16 @@ $csrf = create_admin_csrf_token();
 
             <label for="password">كلمة المرور</label>
             <input id="password" name="password"
-                   type="password" minlength="12"
+                   type="password" minlength="12" maxlength="72"
                    required autocomplete="new-password">
 
             <label for="confirm_password">تأكيد كلمة المرور</label>
             <input id="confirm_password" name="confirm_password"
-                   type="password" minlength="12"
+                   type="password" minlength="12" maxlength="72"
                    required autocomplete="new-password">
 
             <p class="hint">
-                استخدم كلمة مرور قوية لا تقل عن 12 حرفًا.
+                استخدم كلمة مرور قوية بين 12 و72 بايت.
             </p>
 
             <button type="submit">إنشاء حساب المسؤول</button>
