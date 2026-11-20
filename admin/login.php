@@ -36,39 +36,130 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($username === '' || $password === '') {
             $errorMessage = 'أدخل اسم المستخدم وكلمة المرور.';
         } else {
-            $statement = $pdo->prepare(
-                'SELECT id, username, password_hash, role
-                 FROM admin_users
-                 WHERE username = :username AND is_active = 1
-                 LIMIT 1'
-            );
-            $statement->execute(['username' => $username]);
-            $admin = $statement->fetch();
+            $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '';
+            $rateLimitSecret = $dbConfig['DB_PASS'] ?? '';
 
             if (
-                $admin
-                && is_string($admin['password_hash'])
-                && password_verify($password, $admin['password_hash'])
+                filter_var($ipAddress, FILTER_VALIDATE_IP) === false
+                || !is_string($rateLimitSecret)
+                || $rateLimitSecret === ''
             ) {
-                $adminId = (int) $admin['id'];
-                $adminRole = (string) $admin['role'];
-
-                establish_admin_session(
-                    $adminId,
-                    (string) $admin['username'],
-                    $adminRole
+                $errorMessage = 'تعذر معالجة طلب تسجيل الدخول حاليًا.';
+            } else {
+                // Generate keyed hashes instead of storing raw IP addresses or usernames.
+                $ipHash = hash_hmac(
+                    'sha256',
+                    $ipAddress,
+                    $rateLimitSecret
                 );
 
-                $updateLogin = $pdo->prepare(
-                    'UPDATE admin_users SET last_login_at = NOW() WHERE id = :id'
+                $usernameHash = hash_hmac(
+                    'sha256',
+                    strtolower($username),
+                    $rateLimitSecret
                 );
-                $updateLogin->execute(['id' => $adminId]);
 
-                header('Location: dashboard.php');
-                exit;
+                // Remove expired records belonging to this IP.
+                $cleanup = $pdo->prepare(
+                    'DELETE FROM admin_login_attempts
+                     WHERE ip_hash = :ip_hash
+                       AND attempted_at < (NOW() - INTERVAL 1 DAY)'
+                );
+                $cleanup->execute(['ip_hash' => $ipHash]);
+
+                // Maximum 5 failed attempts for this IP and username in 15 minutes.
+                $pairAttempts = $pdo->prepare(
+                    'SELECT COUNT(*)
+                     FROM admin_login_attempts
+                     WHERE ip_hash = :ip_hash
+                       AND username_hash = :username_hash
+                       AND attempted_at >= (NOW() - INTERVAL 15 MINUTE)'
+                );
+                $pairAttempts->execute([
+                    'ip_hash' => $ipHash,
+                    'username_hash' => $usernameHash,
+                ]);
+                $pairAttemptCount = (int) $pairAttempts->fetchColumn();
+
+                // Maximum 20 failed attempts from the same IP in 15 minutes.
+                $ipAttempts = $pdo->prepare(
+                    'SELECT COUNT(*)
+                     FROM admin_login_attempts
+                     WHERE ip_hash = :ip_hash
+                       AND attempted_at >= (NOW() - INTERVAL 15 MINUTE)'
+                );
+                $ipAttempts->execute(['ip_hash' => $ipHash]);
+                $ipAttemptCount = (int) $ipAttempts->fetchColumn();
+
+                if ($pairAttemptCount >= 5 || $ipAttemptCount >= 20) {
+                    $errorMessage = 'تم تجاوز عدد محاولات تسجيل الدخول. انتظر 15 دقيقة ثم حاول مرة أخرى.';
+                } else {
+                    $admin = false;
+
+                    // Match the maximum lengths accepted during owner account creation.
+                    $validLengths = strlen($username) <= 80
+                        && strlen($password) <= 72;
+
+                    if ($validLengths) {
+                        $statement = $pdo->prepare(
+                            'SELECT id, username, password_hash, role
+                             FROM admin_users
+                             WHERE username = :username AND is_active = 1
+                             LIMIT 1'
+                        );
+                        $statement->execute(['username' => $username]);
+                        $admin = $statement->fetch();
+                    }
+
+                    if (
+                        $admin
+                        && is_string($admin['password_hash'])
+                        && password_verify($password, $admin['password_hash'])
+                    ) {
+                        // Clear failed attempts for this IP and username after success.
+                        $clearAttempts = $pdo->prepare(
+                            'DELETE FROM admin_login_attempts
+                             WHERE ip_hash = :ip_hash
+                               AND username_hash = :username_hash'
+                        );
+                        $clearAttempts->execute([
+                            'ip_hash' => $ipHash,
+                            'username_hash' => $usernameHash,
+                        ]);
+
+                        $adminId = (int) $admin['id'];
+                        $adminRole = (string) $admin['role'];
+
+                        establish_admin_session(
+                            $adminId,
+                            (string) $admin['username'],
+                            $adminRole
+                        );
+
+                        $updateLogin = $pdo->prepare(
+                            'UPDATE admin_users SET last_login_at = NOW() WHERE id = :id'
+                        );
+                        $updateLogin->execute(['id' => $adminId]);
+
+                        header('Location: dashboard.php');
+                        exit;
+                    }
+
+                    // Record only failed credential attempts.
+                    $recordAttempt = $pdo->prepare(
+                        'INSERT INTO admin_login_attempts
+                            (ip_hash, username_hash)
+                         VALUES
+                            (:ip_hash, :username_hash)'
+                    );
+                    $recordAttempt->execute([
+                        'ip_hash' => $ipHash,
+                        'username_hash' => $usernameHash,
+                    ]);
+
+                    $errorMessage = 'اسم المستخدم أو كلمة المرور غير صحيحة.';
+                }
             }
-
-            $errorMessage = 'اسم المستخدم أو كلمة المرور غير صحيحة.';
         }
     }
 }
@@ -221,6 +312,7 @@ $csrfToken = create_admin_csrf_token();
                 name="password"
                 type="password"
                 autocomplete="current-password"
+                maxlength="72"
                 required
             >
 
