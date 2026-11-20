@@ -13,7 +13,7 @@ require_admin();
 
 $adminUsername = (string) ($_SESSION['admin_username'] ?? 'Admin');
 $adminRole = (string) ($_SESSION['admin_role'] ?? 'editor');
-
+$csrfToken = create_admin_csrf_token();
 $stats = [
     'categories' => 0,
     'dishes' => 0,
@@ -221,7 +221,14 @@ function dashboard_escape(string $value): string
 <body>
     <header class="topbar">
         <h1 class="brand">Ottoman Palace</h1>
-        <a href="logout.php">تسجيل الخروج</a>
+      <form method="post" action="logout.php">
+    <input
+        type="hidden"
+        name="csrf_token"
+        value="<?= dashboard_escape($csrfToken) ?>"
+    >
+    <button type="submit">تسجيل الخروج</button>
+</form>
     </header>
 
     <main class="container">
