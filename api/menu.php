@@ -1,12 +1,12 @@
 
 <?php
+
+declare(strict_types=1);
 /**
  * Public menu API.
  * Returns the active menu in the structure used by the frontend.
  * Endpoint: /api/menu.php
  */
-
-declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: public, max-age=60');
