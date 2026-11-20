@@ -1,4 +1,3 @@
-
 <?php
 /**
  * Ottoman Palace Restaurant - Admin dashboard
